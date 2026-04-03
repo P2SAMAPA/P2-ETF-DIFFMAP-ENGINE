@@ -4,3 +4,4 @@ numpy
 datasets
 pandas-market-calendars
 huggingface_hub
+streamlit

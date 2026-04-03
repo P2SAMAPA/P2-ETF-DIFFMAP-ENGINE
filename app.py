@@ -1,178 +1,205 @@
-# run.py
+# app.py
 
-import os
-import json
-import numpy as np
+import streamlit as st
 import pandas as pd
+import numpy as np
+import json
 from datetime import datetime
+from huggingface_hub import HfApi, hf_hub_download
 
-from huggingface_hub import HfApi
+st.set_page_config(layout="wide")
 
+HF_REPO = "P2SAMAPA/p2-etf-diffmap-results"
 
-from config import WINDOWS, ALL_ETFS, MACRO_VARS, LOOKBACK, HF_OUTPUT_DATASET
-from portfolio import PortfolioState
-from utils import compute_tbill_daily_rate
-from calendar_utils import get_next_trading_day
+# ─────────────────────────────────────────────
+# LOAD LATEST SIGNAL FROM HF
+# ─────────────────────────────────────────────
+@st.cache_data(ttl=300)
+def load_latest():
+    api = HfApi()
+
+    files = api.list_repo_files(repo_id=HF_REPO, repo_type="dataset")
+    json_files = sorted([f for f in files if f.endswith(".json")])
+
+    if not json_files:
+        return None
+
+    latest = json_files[-1]
+
+    path = hf_hub_download(
+        repo_id=HF_REPO,
+        repo_type="dataset",
+        filename=latest
+    )
+
+    with open(path) as f:
+        return json.load(f)
 
 
 # ─────────────────────────────────────────────
-# TRAIN MODELS PER WINDOW + ETF
+# LOAD HISTORY FROM HF
 # ─────────────────────────────────────────────
-models = {}
+@st.cache_data(ttl=300)
+def load_history():
+    api = HfApi()
 
-for w, start in WINDOWS.items():
-    df_w = df[df["date"] >= start]
-    models[w] = {}
+    files = sorted([
+        f for f in api.list_repo_files(HF_REPO, repo_type="dataset")
+        if f.endswith(".json")
+    ])
 
-    for etf in ALL_ETFS:
-        models[w][etf] = train_model(df_w, etf)
+    history = []
 
-# ─────────────────────────────────────────────
-# PREDICTIONS
-# ─────────────────────────────────────────────
-window_preds = {}
-window_samples = {}
+    for f in files[-30:]:
+        path = hf_hub_download(
+            repo_id=HF_REPO,
+            repo_type="dataset",
+            filename=f
+        )
 
-import torch
+        with open(path) as file:
+            d = json.load(file)
 
-for w in models:
-    window_preds[w] = {}
-    window_samples[w] = {}
+            history.append({
+                "Date": d.get("date"),
+                "Pick": d.get("pick"),
+                "Mode": d.get("mode"),
+                "Score": round(d.get("score", 0), 4)
+            })
 
-    for etf in ALL_ETFS:
-        mu, _ = predict_etf(models[w][etf], df, etf)
-        window_preds[w][etf] = mu
+    return pd.DataFrame(history[::-1])
 
-        data = df[[etf] + MACRO_VARS].dropna().values
-        context = torch.tensor(
-            data[-LOOKBACK:].flatten(),
-            dtype=torch.float32
-        ).unsqueeze(0)
-
-        samples = sample_returns(models[w][etf], context, 100)
-        window_samples[w][etf] = samples
 
 # ─────────────────────────────────────────────
-# AGGREGATION
+# MAIN LOAD
 # ─────────────────────────────────────────────
-final_scores = {}
-agreement = {}
-all_samples = {}
+data = load_latest()
 
-for etf in ALL_ETFS:
-    mus = []
-    pos = 0
-    combined = []
+if data is None:
+    st.warning("No signals yet. Run GitHub Action first.")
+    st.stop()
 
-    for w in WINDOWS:
-        mu = window_preds[w][etf]
-        mus.append(mu)
 
-        s = window_samples[w][etf]
-        combined.extend(s)
+# ─────────────────────────────────────────────
+# HEADER
+# ─────────────────────────────────────────────
+st.title("DIFFMAP — Diffusion ETF Engine")
+st.caption("Generative Modeling · Multi-Window · Distribution-Based Selection")
 
-        if mu > 0:
-            pos += 1
 
-    final_scores[etf] = np.mean(mus)
-    agreement[etf] = pos
-    all_samples[etf] = np.array(combined)
+# ─────────────────────────────────────────────
+# HERO SECTION
+# ─────────────────────────────────────────────
+pick = data.get("pick", "N/A")
+confidence = data.get("confidence", 0)
+mode = data.get("mode", "N/A")
+next_day = data.get("next_trading_day", "N/A")
+
+col1, col2 = st.columns([3, 1])
+
+with col1:
+    st.markdown(f"""
+    <div style="padding:25px;border-radius:15px;background:#f4f0ff;">
+        <h1>{pick}</h1>
+        <h3 style="color:#6c4cff;">{round(confidence*100,1)}% conviction</h3>
+        <p>Signal for <b>{next_day}</b></p>
+        <p>Generated {datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")}</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+with col2:
+    st.metric("Mode", mode)
+    st.metric("Score", round(data.get("score", 0), 4))
+
 
 # ─────────────────────────────────────────────
 # TOP 3
 # ─────────────────────────────────────────────
-sorted_etfs = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)
+st.markdown("### Top Alternatives")
 
-top3 = [{"etf": e, "mu": float(m)} for e, m in sorted_etfs[:3]]
+top3 = data.get("top_3", [])
+cols = st.columns(3)
 
-# ─────────────────────────────────────────────
-# PORTFOLIO DECISION
-# ─────────────────────────────────────────────
-portfolio = PortfolioState()
-tbill = compute_tbill_daily_rate(df)
+for i, t in enumerate(top3):
+    cols[i].metric(
+        label=t["etf"],
+        value=f"{round(t['mu']*100,2)}%"
+    )
 
-pick, score = portfolio.decide(final_scores.copy(), all_samples, tbill)
-
-mode = "NORMAL"
-if portfolio.in_cash:
-    mode = "CASH"
-if portfolio.check_tsl():
-    mode = "TSL_ACTIVE"
-
-samples_best = all_samples.get(pick, np.array([0]))
-confidence = float((samples_best > 0).mean())
 
 # ─────────────────────────────────────────────
-# LIGHT BACKTEST (FAST)
+# DISTRIBUTION HISTOGRAMS
 # ─────────────────────────────────────────────
-equity = [1.0]
-returns_df = df.set_index("date")[ALL_ETFS].pct_change().dropna()
+st.markdown("### Return Distributions")
 
-portfolio_bt = PortfolioState()
+samples = data.get("samples", {})
+cols = st.columns(3)
 
-for i in range(LOOKBACK, len(returns_df) - 1):
-    row = returns_df.iloc[i]
-    next_row = returns_df.iloc[i + 1]
+for i, (etf, vals) in enumerate(samples.items()):
+    if i >= 3:
+        break
 
-    preds_bt = row.to_dict()
+    df_plot = pd.DataFrame({"returns": vals})
+    cols[i].bar_chart(df_plot)
 
-    samples_bt = {
-        k: np.random.normal(v, 0.01, 50)
-        for k, v in preds_bt.items()
-    }
-
-    tbill_bt = compute_tbill_daily_rate(df.iloc[:i])
-
-    pick_bt, _ = portfolio_bt.decide(preds_bt, samples_bt, tbill_bt)
-
-    if pick_bt == "CASH":
-        r = tbill_bt
-    else:
-        r = next_row[pick_bt]
-
-    portfolio_bt.update_returns(r)
-    equity.append(equity[-1] * (1 + r))
-
-equity_curve = equity[-250:]
 
 # ─────────────────────────────────────────────
-# OUTPUT
+# EQUITY CURVE
 # ─────────────────────────────────────────────
-output = {
-    "engine": "DIFFMAP-ETF",
-    "date": datetime.utcnow().strftime("%Y-%m-%d"),
-    "next_trading_day": get_next_trading_day(),
-    "pick": pick,
-    "score": float(score),
-    "confidence": confidence,
-    "mode": mode,
-    "top_3": top3,
-    "window_scores": {
-        w: float(window_preds[w][pick]) for w in WINDOWS
-    },
-    "samples": {k: v.tolist() for k, v in all_samples.items()},
-    "equity_curve": equity_curve,
-    "agreement": agreement
-}
+st.markdown("### Strategy Equity Curve")
 
-os.makedirs("outputs", exist_ok=True)
-fname = f"outputs/diffmap_{output['date']}.json"
+equity = data.get("equity_curve", [])
 
-with open(fname, "w") as f:
-    json.dump(output, f, indent=2)
+if equity:
+    df_eq = pd.DataFrame({"equity": equity})
+    st.line_chart(df_eq)
+else:
+    st.info("Equity curve not available yet.")
 
-print("Saved locally:", fname)
 
 # ─────────────────────────────────────────────
-# UPLOAD TO HUGGING FACE
+# WINDOW AGREEMENT
 # ─────────────────────────────────────────────
-api = HfApi(token=os.environ.get("HF_TOKEN"))
+st.markdown("### Window Agreement")
 
-api.upload_file(
-    path_or_fileobj=fname,
-    path_in_repo=os.path.basename(fname),
-    repo_id=HF_OUTPUT_DATASET,
-    repo_type="dataset"
-)
+agreement = data.get("agreement", {})
 
-print("Uploaded to HF:", HF_OUTPUT_DATASET)
+if agreement:
+    df_agree = pd.DataFrame.from_dict(
+        agreement,
+        orient="index",
+        columns=["Positive Windows"]
+    )
+
+    st.dataframe(
+        df_agree.sort_values("Positive Windows", ascending=False),
+        use_container_width=True
+    )
+
+
+# ─────────────────────────────────────────────
+# SIGNAL HISTORY
+# ─────────────────────────────────────────────
+st.markdown("### Signal History")
+
+df_hist = load_history()
+
+if not df_hist.empty:
+    st.dataframe(df_hist, use_container_width=True)
+else:
+    st.info("No history available yet.")
+
+
+# ─────────────────────────────────────────────
+# REFRESH BUTTON
+# ─────────────────────────────────────────────
+if st.button("🔄 Refresh"):
+    st.cache_data.clear()
+    st.rerun()
+
+
+# ─────────────────────────────────────────────
+# FOOTER
+# ─────────────────────────────────────────────
+st.markdown("---")
+st.caption("DIFFMAP Engine · Research Use Only · Not Financial Advice")

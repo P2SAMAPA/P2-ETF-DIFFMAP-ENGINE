@@ -8,7 +8,7 @@ from datetime import datetime
 
 from huggingface_hub import HfApi
 
-from data_loader import load_data
+
 from config import WINDOWS, ALL_ETFS, MACRO_VARS, LOOKBACK, HF_OUTPUT_DATASET
 from portfolio import PortfolioState
 from utils import compute_tbill_daily_rate
@@ -17,7 +17,7 @@ from calendar_utils import get_next_trading_day
 # ─────────────────────────────────────────────
 # LOAD DATA
 # ─────────────────────────────────────────────
-df = load_data()
+
 df = df.sort_values("date")
 
 # ─────────────────────────────────────────────

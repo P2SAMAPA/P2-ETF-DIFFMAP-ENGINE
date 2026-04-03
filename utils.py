@@ -9,3 +9,8 @@ def aggregate_scores(window_preds):
     confidence = p_up.mean()
 
     return mu_mean * confidence
+
+def compute_tbill_daily_rate(df):
+    # DTB3 is annualized %
+    rate = df["DTB3"].iloc[-1] / 100
+    return rate / 252

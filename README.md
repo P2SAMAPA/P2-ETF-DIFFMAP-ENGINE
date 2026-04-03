@@ -53,3 +53,30 @@ The model learns to predict ϵ (noise), enabling reconstruction of return distri
   "expected_return": 0.0042,
   "confidence": 0.66
 }
+Why Diffusion?
+
+Markets are stochastic.
+
+Instead of predicting:
+
+“What will happen?”
+
+We estimate:
+
+“What could happen, and how likely?”
+
+Dataset
+
+Uses:
+
+P2SAMAPA/p2-etf-deepm-data
+
+Output Storage
+
+Results saved to:
+
+P2SAMAPA/p2-etf-diffmap-results
+
+Status
+
+Research engine. Not financial advice.

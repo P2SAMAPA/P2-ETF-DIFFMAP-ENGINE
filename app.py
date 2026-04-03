@@ -9,9 +9,6 @@ from datetime import datetime
 from huggingface_hub import HfApi
 
 from data_loader import load_data
-from train import train_model
-from infer import predict_etf
-from sampler import sample_returns
 from config import WINDOWS, ALL_ETFS, MACRO_VARS, LOOKBACK, HF_OUTPUT_DATASET
 from portfolio import PortfolioState
 from utils import compute_tbill_daily_rate

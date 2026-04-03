@@ -1,131 +1,85 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import json
 import os
 from datetime import datetime
 
-# ─────────────────────────────────────────────
-# CONFIG
-# ─────────────────────────────────────────────
 st.set_page_config(layout="wide")
 
 OUTPUT_DIR = "outputs"
 
 # ─────────────────────────────────────────────
-# LOAD LATEST OUTPUT
+# LOAD DATA
 # ─────────────────────────────────────────────
 def load_latest():
     files = sorted(os.listdir(OUTPUT_DIR))
-    if not files:
-        return None
-    latest = files[-1]
-    with open(os.path.join(OUTPUT_DIR, latest)) as f:
+    with open(os.path.join(OUTPUT_DIR, files[-1])) as f:
         return json.load(f)
 
 data = load_latest()
-
-if data is None:
-    st.error("No output data found.")
-    st.stop()
 
 # ─────────────────────────────────────────────
 # HEADER
 # ─────────────────────────────────────────────
 st.title("DIFFMAP — Diffusion ETF Engine")
-st.caption("Generative Return Modeling · Multi-Window Ensemble · Distribution-Based Selection")
+st.caption("Generative Modeling · Multi-Window · Distribution-Aware")
 
 # ─────────────────────────────────────────────
-# HERO BOX
+# HERO
 # ─────────────────────────────────────────────
-pick = data.get("pick", "N/A")
-score = data.get("score", 0)
-confidence = data.get("confidence", 0)
-next_day = data.get("next_trading_day", "N/A")
-mode = data.get("mode", "NORMAL")
+pick = data["pick"]
+confidence = data["confidence"]
+mode = data["mode"]
+next_day = data["next_trading_day"]
 
-col1, col2 = st.columns([3,1])
-
-with col1:
-    st.markdown(f"""
-    <div style="
-        padding:30px;
-        border-radius:15px;
-        background-color:#f4f0ff;
-        border:1px solid #e0d7ff;
-    ">
-        <h1 style="margin-bottom:0;">{pick}</h1>
-        <h3 style="color:#6c4cff;">{round(confidence*100,1)}% conviction</h3>
-        <p>Signal for <b>{next_day}</b></p>
-        <p>Generated {datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")}</p>
-        <span style="
-            padding:6px 12px;
-            background:#e6e0ff;
-            border-radius:20px;
-            font-size:12px;
-        ">
-            Source: Multi-Window Diffusion
-        </span>
-    </div>
-    """, unsafe_allow_html=True)
-
-with col2:
-    st.metric("Mode", mode)
-    st.metric("Score", round(score,4))
+st.markdown(f"""
+<div style="padding:25px;border-radius:15px;background:#f4f0ff;">
+<h1>{pick}</h1>
+<h3 style="color:#6c4cff;">{round(confidence*100,1)}% conviction</h3>
+<p>Signal for <b>{next_day}</b></p>
+<p>Mode: <b>{mode}</b></p>
+</div>
+""", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
 # TOP 3
 # ─────────────────────────────────────────────
-top3 = data.get("top_3", [])
-
-if top3:
-    st.markdown("### Top Alternatives")
-    cols = st.columns(3)
-    for i, t in enumerate(top3[:3]):
-        cols[i].metric(
-            label=f"{i+1}. {t['etf']}",
-            value=f"{round(t['mu']*100,2)}%"
-        )
+cols = st.columns(3)
+for i, t in enumerate(data["top_3"]):
+    cols[i].metric(t["etf"], f"{round(t['mu']*100,2)}%")
 
 # ─────────────────────────────────────────────
-# METRICS SECTION
+# DISTRIBUTION PLOTS 🔥
 # ─────────────────────────────────────────────
-st.markdown("---")
+st.markdown("### Return Distributions")
 
-m1, m2, m3, m4 = st.columns(4)
+samples = data["samples"]
 
-m1.metric("Expected Return", f"{round(score*100,2)}%")
-m2.metric("Confidence", f"{round(confidence*100,1)}%")
-m3.metric("Next Trading Day", next_day)
-m4.metric("Mode", mode)
+cols = st.columns(3)
 
-# ─────────────────────────────────────────────
-# WINDOW BREAKDOWN
-# ─────────────────────────────────────────────
-window_scores = data.get("window_scores", {})
-
-if window_scores:
-    st.markdown("### Window Breakdown")
-
-    df_w = pd.DataFrame({
-        "Window": list(window_scores.keys()),
-        "Score": list(window_scores.values())
-    })
-
-    st.bar_chart(df_w.set_index("Window"))
+for i, (etf, vals) in enumerate(samples.items()):
+    if i >= 3:
+        break
+    df = pd.DataFrame({"returns": vals})
+    cols[i].bar_chart(df)
 
 # ─────────────────────────────────────────────
-# EQUITY CURVE (PLACEHOLDER)
+# EQUITY CURVE 🔥
 # ─────────────────────────────────────────────
-st.markdown("### Performance (Coming Soon)")
+st.markdown("### Strategy Equity Curve")
 
-import numpy as np
+eq = pd.DataFrame({"equity": data["equity_curve"]})
+st.line_chart(eq)
 
-dummy = pd.DataFrame({
-    "Strategy": np.cumprod(1 + np.random.normal(0.001, 0.01, 200)),
-    "Benchmark": np.cumprod(1 + np.random.normal(0.0005, 0.01, 200))
-})
+# ─────────────────────────────────────────────
+# AGREEMENT HEATMAP 🔥
+# ─────────────────────────────────────────────
+st.markdown("### Window Agreement Heatmap")
 
-st.line_chart(dummy)
+agreement = pd.DataFrame.from_dict(data["agreement"], orient="index", columns=["Positive Windows"])
+
+st.dataframe(agreement.sort_values("Positive Windows", ascending=False))
 
 # ─────────────────────────────────────────────
 # SIGNAL HISTORY
@@ -134,22 +88,20 @@ st.markdown("### Signal History")
 
 history = []
 
-for file in sorted(os.listdir(OUTPUT_DIR)):
-    with open(os.path.join(OUTPUT_DIR, file)) as f:
-        d = json.load(f)
+for f in sorted(os.listdir(OUTPUT_DIR)):
+    with open(os.path.join(OUTPUT_DIR, f)) as file:
+        d = json.load(file)
         history.append({
-            "Date": d.get("date"),
-            "Pick": d.get("pick"),
-            "Score": round(d.get("score",0),4),
-            "Mode": d.get("mode",""),
+            "Date": d["date"],
+            "Pick": d["pick"],
+            "Mode": d["mode"],
+            "Score": round(d["score"],4)
         })
 
 df_hist = pd.DataFrame(history[::-1])
-
-st.dataframe(df_hist, use_container_width=True)
+st.dataframe(df_hist)
 
 # ─────────────────────────────────────────────
 # FOOTER
 # ─────────────────────────────────────────────
-st.markdown("---")
-st.caption("DIFFMAP Engine · Research Use Only · Not Financial Advice")
+st.caption("DIFFMAP Engine · Not Financial Advice")

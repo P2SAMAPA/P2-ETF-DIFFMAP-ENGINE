@@ -2,7 +2,7 @@ name: DIFFMAP ETF Engine
 
 on:
   schedule:
-    - cron: "30 21 * * 1-5"   # 21:30 UTC (after your data update)
+    - cron: "15 22 * * 1-5"   # 22:15 UTC (after data update)
   workflow_dispatch:
 
 jobs:
@@ -10,38 +10,84 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      # ─────────────────────────────────────────────
+      # 1. Checkout repo
+      # ─────────────────────────────────────────────
+      - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ─────────────────────────────────────────────
+      # 2. Setup Python
+      # ─────────────────────────────────────────────
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
+      # ─────────────────────────────────────────────
+      # 3. Install dependencies
+      # ─────────────────────────────────────────────
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install huggingface_hub pandas-market-calendars
 
+      # ─────────────────────────────────────────────
+      # 4. Cache models (for warm start)
+      # ─────────────────────────────────────────────
       - name: Cache models
         uses: actions/cache@v4
         with:
           path: models/
-          key: diffmap-models-${{ github.run_id }}
+          key: diffmap-models-${{ runner.os }}-${{ github.run_id }}
           restore-keys: |
-            diffmap-models-
+            diffmap-models-${{ runner.os }}-
 
+      # ─────────────────────────────────────────────
+      # 5. Run main pipeline
+      # ─────────────────────────────────────────────
       - name: Run DIFFMAP pipeline
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python run.py
 
-      - name: Commit output locally
+      # ─────────────────────────────────────────────
+      # 6. Upload outputs to Hugging Face dataset
+      # ─────────────────────────────────────────────
+      - name: Upload results to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<EOF
+          from huggingface_hub import HfApi
+          import os
+
+          api = HfApi()
+          repo_id = "P2SAMAPA/p2-etf-diffmap-results"
+
+          for file in os.listdir("outputs"):
+              path = os.path.join("outputs", file)
+              print(f"Uploading {file} to HF dataset...")
+
+              api.upload_file(
+                  path_or_fileobj=path,
+                  path_in_repo=file,
+                  repo_id=repo_id,
+                  repo_type="dataset",
+                  token=os.environ["HF_TOKEN"]
+              )
+          EOF
+
+      # ─────────────────────────────────────────────
+      # 7. Commit outputs back to repo (optional)
+      # ─────────────────────────────────────────────
+      - name: Commit outputs to repo
         run: |
           git config --local user.email "actions@github.com"
           git config --local user.name "github-actions"
 
           git add outputs/
-          git commit -m "DIFFMAP daily run" || echo "No changes"
+          git commit -m "DIFFMAP daily output" || echo "No changes to commit"
           git push

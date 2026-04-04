@@ -1,24 +1,38 @@
+# infer.py
+
+import torch
 import numpy as np
-from config import *
-from sampler import sample_returns
 
-def predict_all(model_dict, df):
+from config import MACRO_VARS, LOOKBACK
 
-    results = {}
-    samples_store = {}
 
-    import torch
+def predict_etf(model, df, etf):
+    """
+    Returns:
+        mu: expected return
+        p_up: probability of positive return
+    """
 
-    for etf in ALL_ETFS:
-        data = df[[etf] + MACRO_VARS].dropna().values
-        context = data[-LOOKBACK:].flatten()
-        context = torch.tensor(context, dtype=torch.float32).unsqueeze(0)
+    model.eval()
 
-        samples = sample_returns(model_dict["A"], context, N_SAMPLES)
+    # prepare input
+    data = df[[etf] + MACRO_VARS].dropna().values
 
-        mu = samples.mean()
+    if len(data) < LOOKBACK:
+        return 0.0, 0.5
 
-        results[etf] = mu
-        samples_store[etf] = samples
+    context = torch.tensor(
+        data[-LOOKBACK:].flatten(),
+        dtype=torch.float32
+    ).unsqueeze(0)
 
-    return results, samples_store
+    with torch.no_grad():
+        preds = model(context)
+
+    # assume model outputs mean return
+    mu = preds.item()
+
+    # simple probability proxy (can improve later)
+    p_up = float(mu > 0)
+
+    return float(mu), p_up

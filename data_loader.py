@@ -37,13 +37,28 @@ def load_data():
     df_macro = pd.read_parquet(macro_path)
 
     # ─────────────────────────────────────────────
-    # BASIC VALIDATION
+    # BASIC VALIDATION - CHECK FOR DATE COLUMN OR INDEX
     # ─────────────────────────────────────────────
+    # CORRECTED: Handle case where date is the index, not a column
     if "date" not in df_ret.columns:
-        raise ValueError("etf_returns.parquet missing 'date' column")
+        # Check if the index is a datetime index and name it 'date'
+        if pd.api.types.is_datetime64_any_dtype(df_ret.index):
+            df_ret = df_ret.reset_index()
+            # Rename the index column to 'date' if it's not already named
+            if df_ret.columns[0] not in ['date', 'Date', 'DATE']:
+                df_ret = df_ret.rename(columns={df_ret.columns[0]: 'date'})
+        else:
+            raise ValueError("etf_returns.parquet missing 'date' column and index is not datetime")
 
     if "date" not in df_macro.columns:
-        raise ValueError("macro_derived.parquet missing 'date' column")
+        # Check if the index is a datetime index and name it 'date'
+        if pd.api.types.is_datetime64_any_dtype(df_macro.index):
+            df_macro = df_macro.reset_index()
+            # Rename the index column to 'date' if it's not already named
+            if df_macro.columns[0] not in ['date', 'Date', 'DATE']:
+                df_macro = df_macro.rename(columns={df_macro.columns[0]: 'date'})
+        else:
+            raise ValueError("macro_derived.parquet missing 'date' column and index is not datetime")
 
     # ─────────────────────────────────────────────
     # MERGE

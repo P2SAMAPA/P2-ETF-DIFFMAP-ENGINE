@@ -5,3 +5,4 @@ datasets
 pandas-market-calendars
 huggingface_hub
 streamlit
+plotly>=5.0.0

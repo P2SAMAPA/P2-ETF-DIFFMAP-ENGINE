@@ -11,27 +11,28 @@ st.set_page_config(layout="wide")
 
 HF_REPO = "P2SAMAPA/p2-etf-diffmap-results"
 
+
+def clean_etf_name(name: str) -> str:
+    """Strip _ret or _logret suffix for display."""
+    return name.replace("_ret", "").replace("_logret", "") if isinstance(name, str) else name
+
+
 # ─────────────────────────────────────────────
 # LOAD LATEST SIGNAL FROM HF
 # ─────────────────────────────────────────────
 @st.cache_data(ttl=300)
 def load_latest():
     api = HfApi()
-
     files = api.list_repo_files(repo_id=HF_REPO, repo_type="dataset")
     json_files = sorted([f for f in files if f.endswith(".json")])
-
     if not json_files:
         return None
-
     latest = json_files[-1]
-
     path = hf_hub_download(
         repo_id=HF_REPO,
         repo_type="dataset",
         filename=latest
     )
-
     with open(path) as f:
         return json.load(f)
 
@@ -42,31 +43,25 @@ def load_latest():
 @st.cache_data(ttl=300)
 def load_history():
     api = HfApi()
-
     files = sorted([
         f for f in api.list_repo_files(HF_REPO, repo_type="dataset")
         if f.endswith(".json")
     ])
-
     history = []
-
     for f in files[-30:]:
         path = hf_hub_download(
             repo_id=HF_REPO,
             repo_type="dataset",
             filename=f
         )
-
         with open(path) as file:
             d = json.load(file)
-
             history.append({
                 "Date": d.get("date"),
-                "Pick": d.get("pick"),
+                "Pick": clean_etf_name(d.get("pick")),
                 "Mode": d.get("mode"),
                 "Score": round(d.get("score", 0), 4)
             })
-
     return pd.DataFrame(history[::-1])
 
 
@@ -90,7 +85,7 @@ st.caption("Generative Modeling · Multi-Window · Distribution-Based Selection"
 # ─────────────────────────────────────────────
 # HERO SECTION
 # ─────────────────────────────────────────────
-pick = data.get("pick", "N/A")
+pick = clean_etf_name(data.get("pick", "N/A"))
 confidence = data.get("confidence", 0)
 mode = data.get("mode", "N/A")
 next_day = data.get("next_trading_day", "N/A")
@@ -122,25 +117,60 @@ cols = st.columns(3)
 
 for i, t in enumerate(top3):
     cols[i].metric(
-        label=t["etf"],
+        label=clean_etf_name(t["etf"]),
         value=f"{round(t['mu']*100,2)}%"
     )
 
 
 # ─────────────────────────────────────────────
+# ALL ETF SCORES
+# ─────────────────────────────────────────────
+st.markdown("### All ETF Scores")
+
+agreement = data.get("agreement", {})
+window_scores = data.get("window_scores", {})
+
+if agreement:
+    # Separate FI and EQ ETFs for display
+    fi_etfs = ["TLT", "LQD", "HYG", "VNQ", "GLD", "SLV", "PFF", "MBB"]
+    eq_etfs = ["SPY", "QQQ", "XLK", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLU", "GDX", "XME"]
+
+    rows = []
+    for raw_name, wins in agreement.items():
+        clean = clean_etf_name(raw_name)
+        category = "Fixed Income" if clean in fi_etfs else "Equity"
+        rows.append({
+            "ETF": clean,
+            "Category": category,
+            "Positive Windows": wins,
+        })
+
+    df_agree = pd.DataFrame(rows).sort_values("Positive Windows", ascending=False)
+
+    tab1, tab2, tab3 = st.tabs(["All", "Equity", "Fixed Income"])
+
+    with tab1:
+        st.dataframe(df_agree, use_container_width=True)
+    with tab2:
+        st.dataframe(df_agree[df_agree["Category"] == "Equity"], use_container_width=True)
+    with tab3:
+        st.dataframe(df_agree[df_agree["Category"] == "Fixed Income"], use_container_width=True)
+
+
+# ─────────────────────────────────────────────
 # DISTRIBUTION HISTOGRAMS
 # ─────────────────────────────────────────────
-st.markdown("### Return Distributions")
+st.markdown("### Return Distributions (Top 3)")
 
 samples = data.get("samples", {})
+top3_names = [t["etf"] for t in top3]
 cols = st.columns(3)
 
-for i, (etf, vals) in enumerate(samples.items()):
-    if i >= 3:
-        break
-
-    df_plot = pd.DataFrame({"returns": vals})
-    cols[i].bar_chart(df_plot)
+for i, etf_raw in enumerate(top3_names[:3]):
+    if etf_raw in samples:
+        df_plot = pd.DataFrame({"returns": samples[etf_raw]})
+        cols[i].caption(clean_etf_name(etf_raw))
+        cols[i].bar_chart(df_plot)
 
 
 # ─────────────────────────────────────────────
@@ -158,23 +188,18 @@ else:
 
 
 # ─────────────────────────────────────────────
-# WINDOW AGREEMENT
+# BACKTEST METRICS
 # ─────────────────────────────────────────────
-st.markdown("### Window Agreement")
+st.markdown("### Backtest Metrics")
 
-agreement = data.get("agreement", {})
+bt = data.get("backtest_metrics", {})
 
-if agreement:
-    df_agree = pd.DataFrame.from_dict(
-        agreement,
-        orient="index",
-        columns=["Positive Windows"]
-    )
-
-    st.dataframe(
-        df_agree.sort_values("Positive Windows", ascending=False),
-        use_container_width=True
-    )
+if bt:
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Annual Return", f"{round(bt.get('annual_return', 0)*100, 2)}%")
+    c2.metric("Sharpe Ratio", round(bt.get('sharpe_ratio', 0), 2))
+    c3.metric("Total Days", bt.get('total_days', 0))
+    c4.metric("Final Equity", round(bt.get('final_equity', 1), 3))
 
 
 # ─────────────────────────────────────────────

@@ -1,14 +1,12 @@
 HF_DATASET = "P2SAMAPA/p2-etf-deepm-data"
 HF_OUTPUT_DATASET = "P2SAMAPA/p2-etf-diffmap-results"
 
-# ETFs — _ret columns (data is already pre-processed returns)
 FI_ETFS = ["TLT_ret","LQD_ret","HYG_ret","VNQ_ret","GLD_ret","SLV_ret","PFF_ret","MBB_ret"]
 FI_BENCHMARK = "AGG_ret"
 EQ_ETFS = ["SPY_ret","QQQ_ret","XLK_ret","XLF_ret","XLE_ret","XLV_ret","XLI_ret","XLY_ret","XLP_ret","XLU_ret","GDX_ret","XME_ret"]
 EQ_BENCHMARK = "SPY_ret"
 ALL_ETFS = FI_ETFS + EQ_ETFS
 
-# Macro — actual derived column names from macro_derived.parquet
 MACRO_VARS = [
     "VIX_zscore",
     "VIX_chg1d",

@@ -1,5 +1,3 @@
-# run.py
-
 import os
 import json
 import numpy as np
@@ -23,14 +21,12 @@ from calendar_utils import get_next_trading_day
 df = load_data()
 df = df.sort_values("date")
 
-# CORRECTED: Add validation for empty dataframe
 if df.empty:
     raise ValueError("Loaded dataframe is empty. Check data source.")
 
 print(f"Data loaded: {len(df)} rows from {df['date'].min()} to {df['date'].max()}")
 
-# CORRECTED: Set date as index for easier alignment
-df = df.set_index('date')
+df = df.set_index("date")
 df = df.sort_index()
 
 # ─────────────────────────────────────────────
@@ -39,13 +35,12 @@ df = df.sort_index()
 models = {}
 
 for w, start in WINDOWS.items():
-    # CORRECTED: Filter by index instead of column
     df_w = df[df.index >= start]
-    
+
     if df_w.empty:
         print(f"Warning: No data for window {w} starting {start}")
         continue
-        
+
     models[w] = {}
 
     for etf in ALL_ETFS:
@@ -69,16 +64,15 @@ for w in models:
     for etf in ALL_ETFS:
         if etf not in models[w]:
             continue
-            
+
         mu, _ = predict_etf(models[w][etf], df.reset_index(), etf)
         window_preds[w][etf] = mu
 
-        # CORRECTED: Use proper data extraction with index
         data_df = df[[etf] + MACRO_VARS].dropna()
         if len(data_df) < LOOKBACK:
             print(f"Warning: Insufficient data for {etf} in window {w}")
             continue
-            
+
         data = data_df.values
         context = torch.tensor(
             data[-LOOKBACK:].flatten(),
@@ -105,7 +99,7 @@ for etf in ALL_ETFS:
             continue
         if etf not in window_preds[w]:
             continue
-            
+
         mu = window_preds[w][etf]
         mus.append(mu)
 
@@ -129,7 +123,6 @@ for etf in ALL_ETFS:
 # TOP 3
 # ─────────────────────────────────────────────
 sorted_etfs = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)
-
 top3 = [{"etf": e, "mu": float(m)} for e, m in sorted_etfs[:3]]
 
 # ─────────────────────────────────────────────
@@ -153,31 +146,25 @@ confidence = float((samples_best > 0).mean()) if len(samples_best) > 0 else 0.0
 # LIGHT BACKTEST (FAST)
 # ─────────────────────────────────────────────
 equity = [1.0]
-# CORRECTED: Calculate returns properly
-returns_df = df[ALL_ETFS].pct_change().dropna()
+
+# Data is already returns — do NOT call pct_change() again
+returns_df = df[ALL_ETFS].dropna()
 
 portfolio_bt = PortfolioState()
 backtest_returns = []
 
-# CORRECTED: Fix backtest loop indices
 for i in range(LOOKBACK, len(returns_df) - 1):
-    # Use the return at position i as the prediction basis
     row = returns_df.iloc[i]
-    # The next day's return is what we actually get
     next_row = returns_df.iloc[i + 1]
 
-    # Convert row to dictionary for predictions
     preds_bt = row.to_dict()
 
-    # Generate synthetic samples based on historical volatility
     samples_bt = {}
     for k, v in preds_bt.items():
-        # Use rolling std if available, otherwise use 0.01
         hist_vol = returns_df[k].rolling(20).std().iloc[i] if i >= 20 else 0.01
         samples_bt[k] = np.random.normal(v, abs(hist_vol) + 0.001, 50)
 
-    # Get T-bill rate for this period
-    tbill_bt = compute_tbill_daily_rate(df.reset_index().iloc[:i+LOOKBACK])
+    tbill_bt = compute_tbill_daily_rate(df.reset_index().iloc[:i + LOOKBACK])
 
     pick_bt, _ = portfolio_bt.decide(preds_bt, samples_bt, tbill_bt)
 
@@ -190,14 +177,9 @@ for i in range(LOOKBACK, len(returns_df) - 1):
     backtest_returns.append(r)
     equity.append(equity[-1] * (1 + r))
 
-# CORRECTED: Handle case where backtest didn't run
-if len(equity) > 0:
-    equity_curve = equity[-min(250, len(equity)):]
-else:
-    equity_curve = [1.0]
+equity_curve = equity[-min(250, len(equity)):]
 
-# Calculate backtest metrics
-backtest_annual_return = (equity[-1] ** (252 / max(len(equity)-1, 1)) - 1) if len(equity) > 1 else 0.0
+backtest_annual_return = (equity[-1] ** (252 / max(len(equity) - 1, 1)) - 1) if len(equity) > 1 else 0.0
 backtest_sharpe = (np.mean(backtest_returns) / (np.std(backtest_returns) + 1e-9) * np.sqrt(252)) if backtest_returns else 0.0
 
 # ─────────────────────────────────────────────
@@ -213,7 +195,8 @@ output = {
     "mode": mode,
     "top_3": top3,
     "window_scores": {
-        w: float(window_preds[w][pick]) for w in WINDOWS 
+        w: float(window_preds[w][pick])
+        for w in WINDOWS
         if w in window_preds and pick in window_preds[w]
     },
     "samples": {k: v.tolist() for k, v in all_samples.items() if len(v) > 0},
@@ -223,8 +206,8 @@ output = {
         "annual_return": backtest_annual_return,
         "sharpe_ratio": backtest_sharpe,
         "total_days": len(backtest_returns),
-        "final_equity": equity[-1] if equity else 1.0
-    }
+        "final_equity": equity[-1] if equity else 1.0,
+    },
 }
 
 os.makedirs("outputs", exist_ok=True)
@@ -243,14 +226,12 @@ print(f"Backtest Sharpe: {backtest_sharpe:.2f}")
 hf_token = os.environ.get("HF_TOKEN")
 if hf_token:
     api = HfApi(token=hf_token)
-    
     api.upload_file(
         path_or_fileobj=fname,
         path_in_repo=os.path.basename(fname),
         repo_id=HF_OUTPUT_DATASET,
-        repo_type="dataset"
+        repo_type="dataset",
     )
-    
     print("Uploaded to HF:", HF_OUTPUT_DATASET)
 else:
     print("Warning: HF_TOKEN not set, skipping upload")

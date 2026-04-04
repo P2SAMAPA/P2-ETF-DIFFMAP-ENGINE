@@ -8,9 +8,9 @@ def aggregate_scores(window_preds):
     return mu_mean * confidence
 
 def compute_tbill_daily_rate(df):
-    # TBILL_daily is already a daily rate (not annualized %)
-    # Column renamed from DTB3 to TBILL_daily in macro_derived.parquet
+    # TBILL_daily in parquet is already a daily rate
     if "TBILL_daily" in df.columns:
-        return float(df["TBILL_daily"].iloc[-1])
-    # Fallback: ~4% annualized
-    return 0.04 / 252
+        val = df["TBILL_daily"].iloc[-1]
+        if not np.isnan(val):
+            return float(val)
+    return 0.04 / 252  # fallback ~4% annualized

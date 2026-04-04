@@ -23,17 +23,36 @@ from calendar_utils import get_next_trading_day
 df = load_data()
 df = df.sort_values("date")
 
+# CORRECTED: Add validation for empty dataframe
+if df.empty:
+    raise ValueError("Loaded dataframe is empty. Check data source.")
+
+print(f"Data loaded: {len(df)} rows from {df['date'].min()} to {df['date'].max()}")
+
+# CORRECTED: Set date as index for easier alignment
+df = df.set_index('date')
+df = df.sort_index()
+
 # ─────────────────────────────────────────────
 # TRAIN MODELS PER WINDOW + ETF
 # ─────────────────────────────────────────────
 models = {}
 
 for w, start in WINDOWS.items():
-    df_w = df[df["date"] >= start]
+    # CORRECTED: Filter by index instead of column
+    df_w = df[df.index >= start]
+    
+    if df_w.empty:
+        print(f"Warning: No data for window {w} starting {start}")
+        continue
+        
     models[w] = {}
 
     for etf in ALL_ETFS:
-        models[w][etf] = train_model(df_w, etf)
+        if etf in df_w.columns:
+            models[w][etf] = train_model(df_w, etf)
+        else:
+            print(f"Warning: ETF {etf} not found in data for window {w}")
 
 # ─────────────────────────────────────────────
 # PREDICTIONS
@@ -48,10 +67,19 @@ for w in models:
     window_samples[w] = {}
 
     for etf in ALL_ETFS:
-        mu, _ = predict_etf(models[w][etf], df, etf)
+        if etf not in models[w]:
+            continue
+            
+        mu, _ = predict_etf(models[w][etf], df.reset_index(), etf)
         window_preds[w][etf] = mu
 
-        data = df[[etf] + MACRO_VARS].dropna().values
+        # CORRECTED: Use proper data extraction with index
+        data_df = df[[etf] + MACRO_VARS].dropna()
+        if len(data_df) < LOOKBACK:
+            print(f"Warning: Insufficient data for {etf} in window {w}")
+            continue
+            
+        data = data_df.values
         context = torch.tensor(
             data[-LOOKBACK:].flatten(),
             dtype=torch.float32
@@ -73,18 +101,29 @@ for etf in ALL_ETFS:
     combined = []
 
     for w in WINDOWS:
+        if w not in window_preds:
+            continue
+        if etf not in window_preds[w]:
+            continue
+            
         mu = window_preds[w][etf]
         mus.append(mu)
 
-        s = window_samples[w][etf]
-        combined.extend(s)
+        if w in window_samples and etf in window_samples[w]:
+            s = window_samples[w][etf]
+            combined.extend(s)
 
         if mu > 0:
             pos += 1
 
-    final_scores[etf] = np.mean(mus)
-    agreement[etf] = pos
-    all_samples[etf] = np.array(combined)
+    if mus:
+        final_scores[etf] = np.mean(mus)
+        agreement[etf] = pos
+        all_samples[etf] = np.array(combined) if combined else np.array([0])
+    else:
+        final_scores[etf] = 0.0
+        agreement[etf] = 0
+        all_samples[etf] = np.array([0])
 
 # ─────────────────────────────────────────────
 # TOP 3
@@ -97,7 +136,7 @@ top3 = [{"etf": e, "mu": float(m)} for e, m in sorted_etfs[:3]]
 # PORTFOLIO DECISION
 # ─────────────────────────────────────────────
 portfolio = PortfolioState()
-tbill = compute_tbill_daily_rate(df)
+tbill = compute_tbill_daily_rate(df.reset_index())
 
 pick, score = portfolio.decide(final_scores.copy(), all_samples, tbill)
 
@@ -108,40 +147,58 @@ if portfolio.check_tsl():
     mode = "TSL_ACTIVE"
 
 samples_best = all_samples.get(pick, np.array([0]))
-confidence = float((samples_best > 0).mean())
+confidence = float((samples_best > 0).mean()) if len(samples_best) > 0 else 0.0
 
 # ─────────────────────────────────────────────
 # LIGHT BACKTEST (FAST)
 # ─────────────────────────────────────────────
 equity = [1.0]
-returns_df = df.set_index("date")[ALL_ETFS].pct_change().dropna()
+# CORRECTED: Calculate returns properly
+returns_df = df[ALL_ETFS].pct_change().dropna()
 
 portfolio_bt = PortfolioState()
+backtest_returns = []
 
+# CORRECTED: Fix backtest loop indices
 for i in range(LOOKBACK, len(returns_df) - 1):
+    # Use the return at position i as the prediction basis
     row = returns_df.iloc[i]
+    # The next day's return is what we actually get
     next_row = returns_df.iloc[i + 1]
 
+    # Convert row to dictionary for predictions
     preds_bt = row.to_dict()
 
-    samples_bt = {
-        k: np.random.normal(v, 0.01, 50)
-        for k, v in preds_bt.items()
-    }
+    # Generate synthetic samples based on historical volatility
+    samples_bt = {}
+    for k, v in preds_bt.items():
+        # Use rolling std if available, otherwise use 0.01
+        hist_vol = returns_df[k].rolling(20).std().iloc[i] if i >= 20 else 0.01
+        samples_bt[k] = np.random.normal(v, abs(hist_vol) + 0.001, 50)
 
-    tbill_bt = compute_tbill_daily_rate(df.iloc[:i])
+    # Get T-bill rate for this period
+    tbill_bt = compute_tbill_daily_rate(df.reset_index().iloc[:i+LOOKBACK])
 
     pick_bt, _ = portfolio_bt.decide(preds_bt, samples_bt, tbill_bt)
 
     if pick_bt == "CASH":
         r = tbill_bt
     else:
-        r = next_row[pick_bt]
+        r = next_row[pick_bt] if pick_bt in next_row.index else 0.0
 
     portfolio_bt.update_returns(r)
+    backtest_returns.append(r)
     equity.append(equity[-1] * (1 + r))
 
-equity_curve = equity[-250:]
+# CORRECTED: Handle case where backtest didn't run
+if len(equity) > 0:
+    equity_curve = equity[-min(250, len(equity)):]
+else:
+    equity_curve = [1.0]
+
+# Calculate backtest metrics
+backtest_annual_return = (equity[-1] ** (252 / max(len(equity)-1, 1)) - 1) if len(equity) > 1 else 0.0
+backtest_sharpe = (np.mean(backtest_returns) / (np.std(backtest_returns) + 1e-9) * np.sqrt(252)) if backtest_returns else 0.0
 
 # ─────────────────────────────────────────────
 # OUTPUT
@@ -156,11 +213,18 @@ output = {
     "mode": mode,
     "top_3": top3,
     "window_scores": {
-        w: float(window_preds[w][pick]) for w in WINDOWS
+        w: float(window_preds[w][pick]) for w in WINDOWS 
+        if w in window_preds and pick in window_preds[w]
     },
-    "samples": {k: v.tolist() for k, v in all_samples.items()},
+    "samples": {k: v.tolist() for k, v in all_samples.items() if len(v) > 0},
     "equity_curve": equity_curve,
-    "agreement": agreement
+    "agreement": agreement,
+    "backtest_metrics": {
+        "annual_return": backtest_annual_return,
+        "sharpe_ratio": backtest_sharpe,
+        "total_days": len(backtest_returns),
+        "final_equity": equity[-1] if equity else 1.0
+    }
 }
 
 os.makedirs("outputs", exist_ok=True)
@@ -170,17 +234,23 @@ with open(fname, "w") as f:
     json.dump(output, f, indent=2)
 
 print("Saved locally:", fname)
+print(f"Selected ETF: {pick} (confidence: {confidence:.2%})")
+print(f"Backtest Sharpe: {backtest_sharpe:.2f}")
 
 # ─────────────────────────────────────────────
 # UPLOAD TO HUGGING FACE
 # ─────────────────────────────────────────────
-api = HfApi(token=os.environ.get("HF_TOKEN"))
-
-api.upload_file(
-    path_or_fileobj=fname,
-    path_in_repo=os.path.basename(fname),
-    repo_id=HF_OUTPUT_DATASET,
-    repo_type="dataset"
-)
-
-print("Uploaded to HF:", HF_OUTPUT_DATASET)
+hf_token = os.environ.get("HF_TOKEN")
+if hf_token:
+    api = HfApi(token=hf_token)
+    
+    api.upload_file(
+        path_or_fileobj=fname,
+        path_in_repo=os.path.basename(fname),
+        repo_id=HF_OUTPUT_DATASET,
+        repo_type="dataset"
+    )
+    
+    print("Uploaded to HF:", HF_OUTPUT_DATASET)
+else:
+    print("Warning: HF_TOKEN not set, skipping upload")

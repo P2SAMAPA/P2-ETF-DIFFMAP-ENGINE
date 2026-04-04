@@ -2,7 +2,7 @@ name: DIFFMAP ETF Engine
 
 on:
   schedule:
-    - cron: "15 22 * * 1-5"   # 22:15 UTC (after data update)
+    - cron: "15 22 * * 1-5"
   workflow_dispatch:
 
 jobs:
@@ -10,32 +10,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ─────────────────────────────────────────────
-      # 1. Checkout repo
-      # ─────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ─────────────────────────────────────────────
-      # 2. Setup Python
-      # ─────────────────────────────────────────────
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      # ─────────────────────────────────────────────
-      # 3. Install dependencies
-      # ─────────────────────────────────────────────
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install huggingface_hub pandas-market-calendars
 
-      # ─────────────────────────────────────────────
-      # 4. Cache models (for warm start)
-      # ─────────────────────────────────────────────
       - name: Cache models
         uses: actions/cache@v4
         with:
@@ -44,84 +32,12 @@ jobs:
           restore-keys: |
             diffmap-models-${{ runner.os }}-
 
-      # ─────────────────────────────────────────────
-      # 5. Debug HF data (remove once confirmed working)
-      # ─────────────────────────────────────────────
-      - name: Debug HF data
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          python - <<EOF
-          from huggingface_hub import hf_hub_download
-          import pandas as pd
-
-          for fname in ["data/etf_returns.parquet", "data/macro_derived.parquet"]:
-              path = hf_hub_download(
-                  repo_id="P2SAMAPA/p2-etf-deepm-data",
-                  repo_type="dataset",
-                  filename=fname
-              )
-              df = pd.read_parquet(path)
-              print(f"\n=== {fname} ===")
-              print(f"  Shape: {df.shape}")
-              print(f"  Index type: {type(df.index)}")
-              print(f"  Index dtype: {df.index.dtype}")
-              print(f"  Columns: {list(df.columns)}")
-              print(f"  First col dtype: {df.iloc[:,0].dtype}")
-              print(f"  Head:\n{df.head(3)}")
-              print(f"  Tail:\n{df.tail(3)}")
-
-          # Also debug the merge
-          print("\n=== MERGE DEBUG ===")
-          ret_path = hf_hub_download(
-              repo_id="P2SAMAPA/p2-etf-deepm-data",
-              repo_type="dataset",
-              filename="data/etf_returns.parquet"
-          )
-          mac_path = hf_hub_download(
-              repo_id="P2SAMAPA/p2-etf-deepm-data",
-              repo_type="dataset",
-              filename="data/macro_derived.parquet"
-          )
-          df_ret = pd.read_parquet(ret_path)
-          df_mac = pd.read_parquet(mac_path)
-
-          # Replicate _ensure_date_column logic
-          for df, label in [(df_ret, "returns"), (df_mac, "macro")]:
-              if "date" in df.columns:
-                  print(f"  {label}: 'date' already a column, dtype={df['date'].dtype}, sample={df['date'].iloc[:3].tolist()}")
-              elif isinstance(df.index, pd.DatetimeIndex):
-                  print(f"  {label}: date is DatetimeIndex, sample={df.index[:3].tolist()}")
-              else:
-                  print(f"  {label}: date not found as column or index — first col is '{df.columns[0]}'")
-
-          # Try the actual merge
-          if "date" not in df_ret.columns and isinstance(df_ret.index, pd.DatetimeIndex):
-              df_ret = df_ret.reset_index().rename(columns={df_ret.index.name or "index": "date"})
-          if "date" not in df_mac.columns and isinstance(df_mac.index, pd.DatetimeIndex):
-              df_mac = df_mac.reset_index().rename(columns={df_mac.index.name or "index": "date"})
-
-          df_ret["date"] = pd.to_datetime(df_ret["date"], errors="coerce")
-          df_mac["date"] = pd.to_datetime(df_mac["date"], errors="coerce")
-
-          merged = pd.merge(df_ret, df_mac, on="date", how="inner")
-          print(f"  Merged rows: {len(merged)}")
-          print(f"  Returns date range: {df_ret['date'].min()} → {df_ret['date'].max()}")
-          print(f"  Macro date range:   {df_mac['date'].min()} → {df_mac['date'].max()}")
-          EOF
-
-      # ─────────────────────────────────────────────
-      # 6. Run main pipeline
-      # ─────────────────────────────────────────────
       - name: Run DIFFMAP pipeline
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python run.py
 
-      # ─────────────────────────────────────────────
-      # 7. Upload outputs to Hugging Face dataset
-      # ─────────────────────────────────────────────
       - name: Upload results to Hugging Face
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -145,15 +61,3 @@ jobs:
                   token=os.environ["HF_TOKEN"]
               )
           EOF
-
-      # ─────────────────────────────────────────────
-      # 8. Commit outputs back to repo (optional)
-      # ─────────────────────────────────────────────
-      - name: Commit outputs to repo
-        run: |
-          git config --local user.email "actions@github.com"
-          git config --local user.name "github-actions"
-
-          git add outputs/
-          git commit -m "DIFFMAP daily output" || echo "No changes to commit"
-          git push

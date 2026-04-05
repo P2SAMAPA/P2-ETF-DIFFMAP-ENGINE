@@ -373,12 +373,7 @@ with c_dist2:
 
 st.divider()
 
-# Strategy Curves
-st.subheader("Simulated Strategy Performance")
-if equity_curves:
-    fig_eq = go.Figure()
-    
-    # Strategy Curves - Robust Version
+# Strategy Curves - Robust Version
 st.subheader("Simulated Strategy Performance")
 if equity_curves:
     fig_eq = go.Figure()

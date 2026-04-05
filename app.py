@@ -14,8 +14,26 @@ HF_REPO = "P2SAMAPA/p2-etf-diffmap-results"
 
 FI_ETFS = ["TLT", "LQD", "HYG", "VNQ", "GLD", "SLV", "PFF", "MBB"]
 EQ_ETFS = ["QQQ", "XLK", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLU", "GDX", "XME"]
-WINDOW_START_YEARS = {"A": "2008", "B": "2012", "C": "2015", "D": "2017", "E": "2019", "F": "2021", "G": "2023"}
-
+WINDOW_START_YEARS = {"A": "2008-01-01",
+    "B": "2009-01-01",
+    "C": "2010-01-01",
+    "D": "2011-01-01",
+    "E": "2012-01-01",
+    "F": "2012-01-01",
+    "G": "2013-01-01",
+    "H": "2014-01-01",
+    "I": "2015-01-01",
+    "J": "2016-01-01",
+    "K": "2017-01-01",
+    "L": "2018-01-01",
+    "M": "2019-01-01",
+    "N": "2020-01-01",
+    "O": "2021-01-01",
+    "P": "2022-01-01",
+    "Q": "2023-01-01",
+    "R": "2024-01-01",
+    "S": "2025-01-01",
+ }
 
 def clean(name):
     return name.replace("_ret", "").replace("_logret", "") if isinstance(name, str) else name

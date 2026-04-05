@@ -378,6 +378,11 @@ st.subheader("Simulated Strategy Performance")
 if equity_curves:
     fig_eq = go.Figure()
     
+    # Strategy Curves - Robust Version
+st.subheader("Simulated Strategy Performance")
+if equity_curves:
+    fig_eq = go.Figure()
+    
     curve_meta = {
         "eq": ("#58a6ff", f"Equity Strategy ({display_eq})", "solid"),
         "fi": ("#3fb950", f"FI Strategy ({display_fi})", "solid"),
@@ -385,22 +390,45 @@ if equity_curves:
         "agg": ("#8b949e", "AGG Benchmark", "dot")
     }
     
+    # Calculate the max length of any curve
     max_len = max(len(v) for v in equity_curves.values())
-    x_main = timeline_dates[-max_len:] if len(timeline_dates) >= max_len else get_proxy_dates(max_len, last_signal_date)
+    
+    # Ensure we have enough dates. If JSON dates are missing/short, generate them.
+    if len(timeline_dates) < max_len:
+        x_axis_final = get_proxy_dates(max_len, last_signal_date)
+    else:
+        x_axis_final = timeline_dates[-max_len:]
+
+    # Convert to pandas datetime to prevent microsecond zooming
+    x_axis_final = pd.to_datetime(x_axis_final)
     
     for key, (color, lab, style) in curve_meta.items():
         if key in equity_curves:
             v_list = equity_curves[key]
+            # Ensure X and Y are same length to prevent plotting errors
+            plot_x = x_axis_final[:len(v_list)]
+            
             fig_eq.add_trace(go.Scatter(
-                x=x_main[:len(v_list)], y=v_list, 
-                name=lab, line=dict(color=color, dash=style, width=2)
+                x=plot_x, 
+                y=v_list, 
+                name=lab, 
+                line=dict(color=color, dash=style, width=2.5),
+                mode='lines'
             ))
             
     fig_eq.update_layout(
-        height=450, margin=dict(l=0, r=0, t=10, b=0),
-        hovermode="x unified", legend=dict(orientation="h", y=1.1),
-        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(showgrid=False), yaxis=dict(gridcolor="#333", title="Growth of $1.00")
+        height=450,
+        margin=dict(l=0, r=0, t=10, b=0),
+        hovermode="x unified",
+        legend=dict(orientation="h", y=1.1),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        xaxis=dict(
+            showgrid=False, 
+            type='date', # Force date type
+            tickformat='%Y-%m-%d'
+        ),
+        yaxis=dict(gridcolor="#333", title="Growth of $1.00")
     )
     st.plotly_chart(fig_eq, use_container_width=True)
 

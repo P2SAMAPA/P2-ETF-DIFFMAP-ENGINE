@@ -103,20 +103,30 @@ def load_history():
 
             # Derive EQ and FI picks from agreement if new fields not present
             agreement = d.get("agreement", {})
-            eq_pick_raw = d.get("eq_pick", "")
-            fi_pick_raw = d.get("fi_pick", "")
+            samples_dict = d.get("samples", {})
+            
+            # Application of 50/50 weighting logic for history display
+            def get_weighted_pick_local(etf_list, agg, samp):
+                best_t = ""
+                best_s = -1.0
+                for t in etf_list:
+                    # Find actual key in agreement (sometimes has _ret suffix)
+                    actual_key = next((k for k in agg if clean(k) == t), t)
+                    win_ratio = agg.get(actual_key, 0) / 19.0
+                    s_data = samp.get(actual_key, [0])
+                    conv = float((np.array(s_data) > 0).mean())
+                    score = (0.5 * win_ratio) + (0.5 * conv)
+                    if score > best_s:
+                        best_s, best_t = score, t
+                return best_t
 
-            if not eq_pick_raw and agreement:
-                eq_cands = {k: v for k, v in agreement.items() if clean(k) in EQ_ETFS}
-                eq_pick_raw = max(eq_cands, key=eq_cands.get) if eq_cands else ""
-            if not fi_pick_raw and agreement:
-                fi_cands = {k: v for k, v in agreement.items() if clean(k) in FI_ETFS}
-                fi_pick_raw = max(fi_cands, key=fi_cands.get) if fi_cands else ""
+            eq_h = get_weighted_pick_local(EQ_ETFS, agreement, samples_dict)
+            fi_h = get_weighted_pick_local(FI_ETFS, agreement, samples_dict)
 
             rows.append({
                 "Date":         d.get("date"),
-                "EQ Pick":      clean(eq_pick_raw),
-                "FI Pick":      clean(fi_pick_raw),
+                "EQ Pick":      eq_h,
+                "FI Pick":      fi_h,
                 "Overall Pick": clean(d.get("pick", "")),
                 "Mode":         d.get("mode"),
             })
@@ -139,25 +149,42 @@ mode        = data.get("mode", "N/A")
 window_scores_raw = data.get("window_scores", {})
 window_table = data.get("window_table", {})
 
-# ── DERIVE EQ/FI PICKS from agreement (works with old JSON) ──
-eq_pick_raw = data.get("eq_pick", "")
-fi_pick_raw = data.get("fi_pick", "")
+# ── NEW WEIGHTED SELECTION LOGIC (50% Windows / 50% Conviction) ──
+def get_weighted_pick(etf_list, agreement_dict, samples_dict):
+    best_ticker = ""
+    best_score = -1.0
+    for ticker in etf_list:
+        # Check for ticker directly or with potential suffixes
+        raw_key = next((k for k in agreement_dict if clean(k) == ticker), ticker)
+        
+        # 1. Window Agreement (Normalized to 0-1 based on 19 windows)
+        wins = agreement_dict.get(raw_key, 0)
+        win_ratio = wins / 19.0
+        
+        # 2. Conviction (Percentage of positive samples)
+        s_data = samples_dict.get(raw_key, [0])
+        conviction = float((np.array(s_data) > 0).mean())
+        
+        # 3. Combined Score
+        combined_score = (0.5 * win_ratio) + (0.5 * conviction)
+        
+        if combined_score > best_score:
+            best_score = combined_score
+            best_ticker = raw_key
+    return best_ticker
 
-if not eq_pick_raw and agreement:
-    eq_cands = {k: v for k, v in agreement.items() if clean(k) in EQ_ETFS}
-    eq_pick_raw = max(eq_cands, key=eq_cands.get) if eq_cands else ""
-
-if not fi_pick_raw and agreement:
-    fi_cands = {k: v for k, v in agreement.items() if clean(k) in FI_ETFS}
-    fi_pick_raw = max(fi_cands, key=fi_cands.get) if fi_cands else ""
+# Identify the Hero Picks using the new weighted logic
+eq_pick_raw = get_weighted_pick(EQ_ETFS, agreement, samples)
+fi_pick_raw = get_weighted_pick(FI_ETFS, agreement, samples)
 
 eq_pick = clean(eq_pick_raw)
 fi_pick = clean(fi_pick_raw)
 
-eq_conf  = data.get("eq_confidence", float((np.array(samples.get(eq_pick_raw, [0])) > 0).mean()))
-fi_conf  = data.get("fi_confidence", float((np.array(samples.get(fi_pick_raw, [0])) > 0).mean()))
-eq_score = data.get("eq_score",  float(np.mean(samples.get(eq_pick_raw, [0]))))
-fi_score = data.get("fi_score",  float(np.mean(samples.get(fi_pick_raw, [0]))))
+# Derived metrics for display
+eq_conf  = float((np.array(samples.get(eq_pick_raw, [0])) > 0).mean())
+fi_conf  = float((np.array(samples.get(fi_pick_raw, [0])) > 0).mean())
+eq_score = float(np.mean(samples.get(eq_pick_raw, [0])))
+fi_score = float(np.mean(samples.get(fi_pick_raw, [0])))
 eq_wins  = agreement.get(eq_pick_raw, 0)
 fi_wins  = agreement.get(fi_pick_raw, 0)
 
@@ -165,7 +192,6 @@ fi_wins  = agreement.get(fi_pick_raw, 0)
 curves = data.get("equity_curves", {})
 
 if not curves:
-    # Reconstruct from samples: each ETF's samples ARE daily return draws
     eq_samp = samples.get(eq_pick_raw, [])
     fi_samp = samples.get(fi_pick_raw, [])
 
@@ -174,7 +200,6 @@ if not curves:
     if fi_samp:
         curves["fi"] = samples_to_equity(fi_samp)
 
-    # For SPY and AGG benchmarks use their samples too
     spy_raw = next((k for k in samples if clean(k) == "SPY"), None)
     agg_raw = next((k for k in samples if clean(k) == "AGG"), None)
     if spy_raw:
@@ -182,7 +207,6 @@ if not curves:
     if agg_raw:
         curves["agg"] = samples_to_equity(samples[agg_raw])
 
-    # Fallback: if old equity_curve exists, use it as eq proxy
     if "eq" not in curves and "equity_curve" in data:
         curves["eq"] = data["equity_curve"]
 
@@ -208,7 +232,7 @@ if not bt_fi and curves.get("fi"):
 # ════════════════════════════════════════════════════════════
 
 st.title("DIFFMAP — Diffusion ETF Engine")
-st.caption("Generative Modeling · Multi-Window · Distribution-Based Selection")
+st.caption("Generative Modeling · Multi-Window · Weighted Selection (Agreement + Conviction)")
 st.markdown(
     f"**Signal for:** {next_day} &nbsp;|&nbsp; **Mode:** {mode} &nbsp;|&nbsp; "
     f"Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
@@ -224,7 +248,7 @@ with col_eq:
         <h1 style="margin:6px 0 2px;color:#1a3c8f;font-size:3rem;">{eq_pick or "—"}</h1>
         <h3 style="margin:0;color:#2d5be3;">{round(eq_conf*100,1)}% conviction</h3>
         <p style="margin:8px 0 0;color:#444;font-size:14px;">
-            Avg return: {round(eq_score*100,3)}% &nbsp;|&nbsp; {eq_wins}/7 windows agree
+            Avg return: {round(eq_score*100,3)}% &nbsp;|&nbsp; {eq_wins}/19 windows agree
         </p>
     </div>""", unsafe_allow_html=True)
 
@@ -235,7 +259,7 @@ with col_fi:
         <h1 style="margin:6px 0 2px;color:#1a5c3a;font-size:3rem;">{fi_pick or "—"}</h1>
         <h3 style="margin:0;color:#2db36a;">{round(fi_conf*100,1)}% conviction</h3>
         <p style="margin:8px 0 0;color:#444;font-size:14px;">
-            Avg return: {round(fi_score*100,3)}% &nbsp;|&nbsp; {fi_wins}/7 windows agree
+            Avg return: {round(fi_score*100,3)}% &nbsp;|&nbsp; {fi_wins}/19 windows agree
         </p>
     </div>""", unsafe_allow_html=True)
 
@@ -249,10 +273,18 @@ for raw, wins in agreement.items():
     cat = "Fixed Income" if c in FI_ETFS else "Equity"
     mu   = float(np.mean(samples.get(raw, [0])))
     conf = float((np.array(samples.get(raw, [0])) > 0).mean())
-    rows.append({"ETF": c, "Category": cat, "Positive Windows": wins,
-                  "Avg Sample Return (%)": round(mu*100, 3), "Conviction (%)": round(conf*100, 1)})
+    # Calculate display score using 19 windows
+    weighted_score = (0.5 * (wins/19.0)) + (0.5 * conf)
+    rows.append({
+        "ETF": c, 
+        "Category": cat, 
+        "Positive Windows": wins,
+        "Conviction (%)": round(conf*100, 1),
+        "Weighted Score": round(weighted_score, 3),
+        "Avg Sample Return (%)": round(mu*100, 3)
+    })
 
-df_all = pd.DataFrame(rows).sort_values("Positive Windows", ascending=False)
+df_all = pd.DataFrame(rows).sort_values("Weighted Score", ascending=False)
 tab_all, tab_eq_t, tab_fi_t = st.tabs(["All", "Equity", "Fixed Income"])
 with tab_all:
     st.dataframe(df_all, use_container_width=True, hide_index=True)
@@ -268,8 +300,7 @@ st.markdown("### Return Distributions — Equity Pick vs FI Pick")
 
 def dist_chart(raw_key, label, color, fill_color):
     s = samples.get(raw_key, [])
-    if not s:
-        return None
+    if not s: return None
     n = len(s)
     x = make_x_dates(n, signal_date) if not curve_dates else (
         curve_dates[-n:] if len(curve_dates) >= n else make_x_dates(n, signal_date)
@@ -284,8 +315,7 @@ def dist_chart(raw_key, label, color, fill_color):
     fig.update_layout(
         height=260, margin=dict(l=0, r=0, t=30, b=0),
         title=dict(text=label, font=dict(size=13)),
-        xaxis=dict(tickformat="%Y", dtick="M12", tickangle=-30,
-                    showgrid=True, gridcolor="#f0f0f0"),
+        xaxis=dict(tickformat="%Y", dtick="M12", tickangle=-30, showgrid=True, gridcolor="#f0f0f0"),
         yaxis=dict(showgrid=True, gridcolor="#f0f0f0", zeroline=False),
         plot_bgcolor="white", paper_bgcolor="white", showlegend=False,
     )
@@ -294,23 +324,18 @@ def dist_chart(raw_key, label, color, fill_color):
 dc1, dc2 = st.columns(2)
 with dc1:
     f = dist_chart(eq_pick_raw, f"{eq_pick} (Equity)", "rgb(45,91,227)", "rgba(45,91,227,0.1)")
-    if f:
-        st.plotly_chart(f, use_container_width=True)
-    else:
-        st.info("No distribution data.")
+    if f: st.plotly_chart(f, use_container_width=True)
+    else: st.info("No distribution data.")
 
 with dc2:
     f = dist_chart(fi_pick_raw, f"{fi_pick} (Fixed Income)", "rgb(45,179,106)", "rgba(45,179,106,0.1)")
-    if f:
-        st.plotly_chart(f, use_container_width=True)
-    else:
-        st.info("No distribution data.")
+    if f: st.plotly_chart(f, use_container_width=True)
+    else: st.info("No distribution data.")
 
 st.divider()
 
 # ── EQUITY CURVES ────────────────────────────────────────────
 st.markdown("### Strategy Equity Curves vs Benchmarks")
-
 if curves:
     color_map = {
         "eq":  ("rgb(45,91,227)",   f"Equity Strategy ({eq_pick})",  "solid"),
@@ -318,34 +343,15 @@ if curves:
         "spy": ("rgb(220,80,60)",   "SPY (Benchmark)",                "dash"),
         "agg": ("rgb(160,120,220)", "AGG (Benchmark)",                "dot"),
     }
-
     max_len = max(len(v) for v in curves.values()) if curves else 0
-    if curve_dates and len(curve_dates) >= max_len:
-        x_base = curve_dates[-max_len:]
-    else:
-        x_base = make_x_dates(max_len, signal_date)
-
+    x_base = curve_dates[-max_len:] if (curve_dates and len(curve_dates) >= max_len) else make_x_dates(max_len, signal_date)
     fig_c = go.Figure()
     for key, (color, label, dash) in color_map.items():
         if key in curves and curves[key]:
             vals = curves[key]
-            x = x_base[:len(vals)]
-            fig_c.add_trace(go.Scatter(
-                x=x, y=vals, mode="lines", name=label,
-                line=dict(color=color, width=2, dash=dash),
-            ))
-
-    fig_c.update_layout(
-        height=420, margin=dict(l=0, r=0, t=10, b=0),
-        xaxis=dict(tickformat="%Y", dtick="M12", tickangle=-30,
-                    showgrid=True, gridcolor="#f0f0f0"),
-        yaxis=dict(title="Portfolio Value (start=1)", showgrid=True, gridcolor="#f0f0f0"),
-        plot_bgcolor="white", paper_bgcolor="white",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        hovermode="x unified",
-    )
+            fig_c.add_trace(go.Scatter(x=x_base[:len(vals)], y=vals, mode="lines", name=label, line=dict(color=color, width=2, dash=dash)))
+    fig_c.update_layout(height=420, margin=dict(l=0, r=0, t=10, b=0), xaxis=dict(tickformat="%Y", dtick="M12", tickangle=-30, showgrid=True, gridcolor="#f0f0f0"), yaxis=dict(title="Portfolio Value (start=1)", showgrid=True, gridcolor="#f0f0f0"), plot_bgcolor="white", paper_bgcolor="white", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), hovermode="x unified")
     st.plotly_chart(fig_c, use_container_width=True)
-    st.caption("⚠️ Until updated run.py is deployed, EQ/FI curves are derived from diffusion samples (current signal period only), not full historical backtest.")
 else:
     st.info("No curve data available.")
 
@@ -353,69 +359,35 @@ st.divider()
 
 # ── BACKTEST METRICS ─────────────────────────────────────────
 st.markdown("### Backtest Metrics")
-
 bt_rows = []
-if bt_eq:
-    bt_rows.append({
-        "Strategy": f"Equity Strategy ({eq_pick})",
-        "Annual Return": f"{round(bt_eq.get('annual_return', 0)*100, 2)}%",
-        "Sharpe Ratio": round(bt_eq.get('sharpe_ratio', 0), 2),
-        "Total Days": bt_eq.get('total_days', 0),
-        "Final Equity": round(bt_eq.get('final_equity', 1), 3),
-    })
-if bt_fi:
-    bt_rows.append({
-        "Strategy": f"FI Strategy ({fi_pick})",
-        "Annual Return": f"{round(bt_fi.get('annual_return', 0)*100, 2)}%",
-        "Sharpe Ratio": round(bt_fi.get('sharpe_ratio', 0), 2),
-        "Total Days": bt_fi.get('total_days', 0),
-        "Final Equity": round(bt_fi.get('final_equity', 1), 3),
-    })
-
-if bt_rows:
-    st.dataframe(pd.DataFrame(bt_rows), use_container_width=True, hide_index=True)
-else:
-    st.info("No backtest data available.")
+if bt_eq: bt_rows.append({"Strategy": f"Equity Strategy ({eq_pick})", "Annual Return": f"{round(bt_eq.get('annual_return', 0)*100, 2)}%", "Sharpe Ratio": round(bt_eq.get('sharpe_ratio', 0), 2), "Total Days": bt_eq.get('total_days', 0), "Final Equity": round(bt_eq.get('final_equity', 1), 3)})
+if bt_fi: bt_rows.append({"Strategy": f"FI Strategy ({fi_pick})", "Annual Return": f"{round(bt_fi.get('annual_return', 0)*100, 2)}%", "Sharpe Ratio": round(bt_fi.get('sharpe_ratio', 0), 2), "Total Days": bt_fi.get('total_days', 0), "Final Equity": round(bt_fi.get('final_equity', 1), 3)})
+if bt_rows: st.dataframe(pd.DataFrame(bt_rows), use_container_width=True, hide_index=True)
+else: st.info("No backtest data available.")
 
 st.divider()
 
 # ── WINDOW TABLE ─────────────────────────────────────────────
 st.markdown("### Window Scores by Year")
-
 if window_table:
     wrows = []
     for w, info in sorted(window_table.items()):
-        wrows.append({
-            "Window": w,
-            "Start Year": info.get("start_year", WINDOW_START_YEARS.get(w, w)),
-            "EQ Pick": info.get("eq_pick", ""),
-            "EQ Score (%)": round(info.get("eq_score", 0)*100, 3),
-            "FI Pick": info.get("fi_pick", ""),
-            "FI Score (%)": round(info.get("fi_score", 0)*100, 3),
-        })
+        wrows.append({"Window": w, "Start Year": info.get("start_year", WINDOW_START_YEARS.get(w, w)), "EQ Pick": info.get("eq_pick", ""), "EQ Score (%)": round(info.get("eq_score", 0)*100, 3), "FI Pick": info.get("fi_pick", ""), "FI Score (%)": round(info.get("fi_score", 0)*100, 3)})
     st.dataframe(pd.DataFrame(wrows), use_container_width=True, hide_index=True)
-
 elif window_scores_raw:
     wrows = []
     overall_pick = clean(data.get("pick", ""))
     for w, score in window_scores_raw.items():
-        wrows.append({
-            "Window": w,
-            "Start Year": WINDOW_START_YEARS.get(w, w),
-            f"Overall Pick ({overall_pick}) Score (%)": round(score*100, 3),
-        })
+        wrows.append({"Window": w, "Start Year": WINDOW_START_YEARS.get(w, w), f"Overall Pick ({overall_pick}) Score (%)": round(score*100, 3)})
     st.dataframe(pd.DataFrame(wrows), use_container_width=True, hide_index=True)
-    st.caption("⚠️ EQ/FI split per window available after updated run.py is deployed.")
 
 st.divider()
 
 # ── SIGNAL HISTORY ───────────────────────────────────────────
 st.markdown("### Signal History (Last 30 Days)")
 df_hist = load_history()
-if not df_hist.empty:
-    st.dataframe(df_hist, use_container_width=True, hide_index=True)
-else:
-    st.info("No history available yet.")
+if not df_hist.empty: st.dataframe(df_hist, use_container_width=True, hide_index=True)
+else: st.info("No history available yet.")
 
 st.divider()
 

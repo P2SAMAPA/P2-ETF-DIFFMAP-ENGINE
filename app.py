@@ -14,7 +14,7 @@ st.set_page_config(layout="wide", page_title="DIFFMAP ETF Engine")
 HF_REPO = "P2SAMAPA/p2-etf-diffmap-results"
 
 FI_ETFS = ["TLT", "LQD", "HYG", "VNQ", "GLD", "SLV", "PFF", "MBB"]
-EQ_ETFS = ["SPY", "QQQ", "XLK", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLU", "GDX", "XME"]
+EQ_ETFS = ["QQQ", "XLK", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLU", "GDX", "XME"]
 WINDOW_START_YEARS = {"A": "2008", "B": "2012", "C": "2015", "D": "2017", "E": "2019", "F": "2021", "G": "2023"}
 
 

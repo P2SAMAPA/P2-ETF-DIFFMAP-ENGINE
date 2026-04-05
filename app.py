@@ -1,12 +1,10 @@
-# app.py
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 import json
 import plotly.graph_objects as go
 import datetime as dt
-from datetime import datetime
+from datetime import datetime, timezone
 from huggingface_hub import HfApi, hf_hub_download
 
 st.set_page_config(layout="wide", page_title="DIFFMAP ETF Engine")
@@ -81,44 +79,50 @@ def make_x_dates(n, end_date_str=None):
 @st.cache_data(ttl=300)
 def load_latest():
     api = HfApi()
-    files = sorted([f for f in api.list_repo_files(repo_id=HF_REPO, repo_type="dataset") if f.endswith(".json")])
-    if not files:
+    try:
+        files = sorted([f for f in api.list_repo_files(repo_id=HF_REPO, repo_type="dataset") if f.endswith(".json")])
+        if not files:
+            return None
+        path = hf_hub_download(repo_id=HF_REPO, repo_type="dataset", filename=files[-1])
+        with open(path) as f:
+            return json.load(f)
+    except:
         return None
-    path = hf_hub_download(repo_id=HF_REPO, repo_type="dataset", filename=files[-1])
-    with open(path) as f:
-        return json.load(f)
 
 
 @st.cache_data(ttl=300)
 def load_history():
     api = HfApi()
-    files = sorted([f for f in api.list_repo_files(HF_REPO, repo_type="dataset") if f.endswith(".json")])
-    rows = []
-    for f in files[-30:]:
-        path = hf_hub_download(repo_id=HF_REPO, repo_type="dataset", filename=f)
-        with open(path) as fh:
-            d = json.load(fh)
+    try:
+        files = sorted([f for f in api.list_repo_files(HF_REPO, repo_type="dataset") if f.endswith(".json")])
+        rows = []
+        for f in files[-30:]:
+            path = hf_hub_download(repo_id=HF_REPO, repo_type="dataset", filename=f)
+            with open(path) as fh:
+                d = json.load(fh)
 
-        # Derive EQ and FI picks from agreement if new fields not present
-        agreement = d.get("agreement", {})
-        eq_pick_raw = d.get("eq_pick", "")
-        fi_pick_raw = d.get("fi_pick", "")
+            # Derive EQ and FI picks from agreement if new fields not present
+            agreement = d.get("agreement", {})
+            eq_pick_raw = d.get("eq_pick", "")
+            fi_pick_raw = d.get("fi_pick", "")
 
-        if not eq_pick_raw and agreement:
-            eq_cands = {k: v for k, v in agreement.items() if clean(k) in EQ_ETFS}
-            eq_pick_raw = max(eq_cands, key=eq_cands.get) if eq_cands else ""
-        if not fi_pick_raw and agreement:
-            fi_cands = {k: v for k, v in agreement.items() if clean(k) in FI_ETFS}
-            fi_pick_raw = max(fi_cands, key=fi_cands.get) if fi_cands else ""
+            if not eq_pick_raw and agreement:
+                eq_cands = {k: v for k, v in agreement.items() if clean(k) in EQ_ETFS}
+                eq_pick_raw = max(eq_cands, key=eq_cands.get) if eq_cands else ""
+            if not fi_pick_raw and agreement:
+                fi_cands = {k: v for k, v in agreement.items() if clean(k) in FI_ETFS}
+                fi_pick_raw = max(fi_cands, key=fi_cands.get) if fi_cands else ""
 
-        rows.append({
-            "Date":         d.get("date"),
-            "EQ Pick":      clean(eq_pick_raw),
-            "FI Pick":      clean(fi_pick_raw),
-            "Overall Pick": clean(d.get("pick", "")),
-            "Mode":         d.get("mode"),
-        })
-    return pd.DataFrame(rows[::-1])
+            rows.append({
+                "Date":         d.get("date"),
+                "EQ Pick":      clean(eq_pick_raw),
+                "FI Pick":      clean(fi_pick_raw),
+                "Overall Pick": clean(d.get("pick", "")),
+                "Mode":         d.get("mode"),
+            })
+        return pd.DataFrame(rows[::-1])
+    except:
+        return pd.DataFrame()
 
 
 # ── LOAD ─────────────────────────────────────────────────────
@@ -162,7 +166,6 @@ curves = data.get("equity_curves", {})
 
 if not curves:
     # Reconstruct from samples: each ETF's samples ARE daily return draws
-    # Best EQ strategy: use eq_pick samples as its return series
     eq_samp = samples.get(eq_pick_raw, [])
     fi_samp = samples.get(fi_pick_raw, [])
 
@@ -208,7 +211,7 @@ st.title("DIFFMAP — Diffusion ETF Engine")
 st.caption("Generative Modeling · Multi-Window · Distribution-Based Selection")
 st.markdown(
     f"**Signal for:** {next_day} &nbsp;|&nbsp; **Mode:** {mode} &nbsp;|&nbsp; "
-    f"Generated {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
+    f"Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
 )
 st.divider()
 
@@ -247,7 +250,7 @@ for raw, wins in agreement.items():
     mu   = float(np.mean(samples.get(raw, [0])))
     conf = float((np.array(samples.get(raw, [0])) > 0).mean())
     rows.append({"ETF": c, "Category": cat, "Positive Windows": wins,
-                 "Avg Sample Return (%)": round(mu*100, 3), "Conviction (%)": round(conf*100, 1)})
+                  "Avg Sample Return (%)": round(mu*100, 3), "Conviction (%)": round(conf*100, 1)})
 
 df_all = pd.DataFrame(rows).sort_values("Positive Windows", ascending=False)
 tab_all, tab_eq_t, tab_fi_t = st.tabs(["All", "Equity", "Fixed Income"])
@@ -282,7 +285,7 @@ def dist_chart(raw_key, label, color, fill_color):
         height=260, margin=dict(l=0, r=0, t=30, b=0),
         title=dict(text=label, font=dict(size=13)),
         xaxis=dict(tickformat="%Y", dtick="M12", tickangle=-30,
-                   showgrid=True, gridcolor="#f0f0f0"),
+                    showgrid=True, gridcolor="#f0f0f0"),
         yaxis=dict(showgrid=True, gridcolor="#f0f0f0", zeroline=False),
         plot_bgcolor="white", paper_bgcolor="white", showlegend=False,
     )
@@ -312,8 +315,8 @@ if curves:
     color_map = {
         "eq":  ("rgb(45,91,227)",   f"Equity Strategy ({eq_pick})",  "solid"),
         "fi":  ("rgb(45,179,106)",  f"FI Strategy ({fi_pick})",      "solid"),
-        "spy": ("rgb(220,80,60)",   "SPY (Benchmark)",               "dash"),
-        "agg": ("rgb(160,120,220)", "AGG (Benchmark)",               "dot"),
+        "spy": ("rgb(220,80,60)",   "SPY (Benchmark)",                "dash"),
+        "agg": ("rgb(160,120,220)", "AGG (Benchmark)",                "dot"),
     }
 
     max_len = max(len(v) for v in curves.values()) if curves else 0
@@ -335,7 +338,7 @@ if curves:
     fig_c.update_layout(
         height=420, margin=dict(l=0, r=0, t=10, b=0),
         xaxis=dict(tickformat="%Y", dtick="M12", tickangle=-30,
-                   showgrid=True, gridcolor="#f0f0f0"),
+                    showgrid=True, gridcolor="#f0f0f0"),
         yaxis=dict(title="Portfolio Value (start=1)", showgrid=True, gridcolor="#f0f0f0"),
         plot_bgcolor="white", paper_bgcolor="white",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
@@ -393,7 +396,6 @@ if window_table:
     st.dataframe(pd.DataFrame(wrows), use_container_width=True, hide_index=True)
 
 elif window_scores_raw:
-    # Old format fallback — show with year labels, note limitation
     wrows = []
     overall_pick = clean(data.get("pick", ""))
     for w, score in window_scores_raw.items():

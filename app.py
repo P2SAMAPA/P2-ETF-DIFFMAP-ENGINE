@@ -41,18 +41,19 @@ WINDOW_START_YEARS = {
     "S": "2025-01-01",
 }
 
-# ── NYSE TRADING CALENDAR ────────────────────────────────────
+# ── NYSE TRADING CALENDAR (CORRECTED) ────────────────────────
 def get_nyse_next_trading_day(base_date_str):
     """
-    Calculates the next valid NYSE trading day.
-    Filters out weekends and specific 2026 Market Holidays.
+    Returns the next valid NYSE trading day.
+    If the input date is already a trading day (weekday, not holiday),
+    it returns the same date. Otherwise, it finds the next trading day.
     """
     try:
-        current_dt = pd.to_datetime(base_date_str)
+        current_dt = pd.to_datetime(base_date_str).normalize()
     except Exception:
-        current_dt = pd.Timestamp.now(tz='US/Eastern')
+        current_dt = pd.Timestamp.now(tz='US/Eastern').normalize()
     
-    # Official 2026 NYSE Holiday Schedule
+    # Official 2026 NYSE Holiday Schedule (extendable)
     nyse_holidays = [
         '2026-01-01', # New Year's Day
         '2026-01-19', # Martin Luther King, Jr. Day
@@ -66,13 +67,18 @@ def get_nyse_next_trading_day(base_date_str):
         '2026-12-25'  # Christmas Day
     ]
     
-    # Increment to the next business day (Mon-Fri)
-    next_biz_day = current_dt + pd.offsets.BusinessDay(1)
+    # Check if current date is a valid trading day
+    is_weekday = current_dt.weekday() < 5  # Monday=0, Friday=4
+    is_holiday = current_dt.strftime('%Y-%m-%d') in nyse_holidays
+    if is_weekday and not is_holiday:
+        # Already a trading day – use it directly
+        return current_dt.strftime('%Y-%m-%d')
     
-    # Check if the resulting day is a holiday; if so, skip to next
+    # Otherwise, increment to the next business day
+    next_biz_day = current_dt + pd.offsets.BusinessDay(1)
     while next_biz_day.strftime('%Y-%m-%d') in nyse_holidays:
         next_biz_day = next_biz_day + pd.offsets.BusinessDay(1)
-        
+    
     return next_biz_day.strftime('%Y-%m-%d')
 
 # ── DATA CLEANING & TRANSFORMS ───────────────────────────────
@@ -420,7 +426,7 @@ if equity_curves:
         paper_bgcolor="rgba(0,0,0,0)",
         xaxis=dict(
             showgrid=False, 
-            type='date', # Force date type
+            type='date',
             tickformat='%Y-%m-%d'
         ),
         yaxis=dict(gridcolor="#333", title="Growth of $1.00")

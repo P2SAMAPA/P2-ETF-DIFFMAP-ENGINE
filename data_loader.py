@@ -1,81 +1,89 @@
 import pandas as pd
-import numpy as np
 from huggingface_hub import hf_hub_download
-from config import ALL_ETFS, MACRO_VARS
-
-HF_DATASET = "P2SAMAPA/p2-etf-deepm-data"
-MIN_ROWS = 100
 
 def _ensure_date_column(df, label):
-    """Robustly extracts date into a plain 'date' column."""
-    if "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        return df
-
-    for col in ["Date", "DATE", "datetime", "Datetime", "time"]:
+    """
+    Ensures the DataFrame has a proper 'date' column (datetime).
+    Handles:
+    - Columns named: 'date', 'Date', 'DATE', 'datetime', 'Datetime', 'time', 'TIME', 'timestamp', 'TIMESTAMP'
+    - A column named 'index' that contains milliseconds
+    - The DataFrame index if it is a DatetimeIndex or numeric milliseconds
+    """
+    # 1. Look for a known date column name
+    date_candidates = ["date", "Date", "DATE", "datetime", "Datetime", "time", "TIME", "timestamp", "TIMESTAMP"]
+    for col in date_candidates:
         if col in df.columns:
             df = df.rename(columns={col: "date"})
-            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            # Convert to datetime, handling numeric milliseconds/seconds
+            if pd.api.types.is_numeric_dtype(df["date"]):
+                # Assume milliseconds if values > 1e12, otherwise seconds
+                unit = 'ms' if df["date"].iloc[0] > 1e12 else 's'
+                df["date"] = pd.to_datetime(df["date"], unit=unit, errors="coerce")
+            else:
+                df["date"] = pd.to_datetime(df["date"], errors="coerce")
             return df
 
-    if isinstance(df.index, pd.DatetimeIndex) or df.index.name in ("date", "Date", "DATE"):
-        df = df.reset_index().rename(columns={df.index.name or df.columns[0]: "date"})
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    # 2. Check for a column named 'index' (common when reset_index was used)
+    if "index" in df.columns:
+        df = df.rename(columns={"index": "date"})
+        if pd.api.types.is_numeric_dtype(df["date"]):
+            unit = 'ms' if df["date"].iloc[0] > 1e12 else 's'
+            df["date"] = pd.to_datetime(df["date"], unit=unit, errors="coerce")
+        else:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
         return df
-    
-    raise ValueError(f"[{label}] Could not find a date column or index.")
+
+    # 3. Check if the index is a DatetimeIndex
+    if isinstance(df.index, pd.DatetimeIndex):
+        df = df.reset_index().rename(columns={"index": "date"})
+        return df
+
+    # 4. If index is numeric and looks like milliseconds/seconds, convert it
+    if pd.api.types.is_numeric_dtype(df.index):
+        first_val = df.index[0]
+        if first_val > 1e12:   # milliseconds
+            df.index = pd.to_datetime(df.index, unit='ms')
+        elif first_val > 1e9:  # seconds
+            df.index = pd.to_datetime(df.index, unit='s')
+        else:
+            raise ValueError(f"[{label}] Numeric index but value {first_val} is not a valid timestamp (ms or s).")
+        df = df.reset_index().rename(columns={"index": "date"})
+        return df
+
+    # 5. If no date column or convertible index found, raise error
+    raise ValueError(f"[{label}] Could not find a date column or index. Available columns: {df.columns.tolist()}")
 
 def load_data():
-    # ── DOWNLOAD ─────────────────────────────────
-    try:
-        returns_path = hf_hub_download(repo_id=HF_DATASET, repo_type="dataset", filename="data/etf_returns.parquet")
-        macro_path = hf_hub_download(repo_id=HF_DATASET, repo_type="dataset", filename="data/macro_derived.parquet")
-    except Exception as e:
-        print(f"[data_loader] HF Download failed: {e}")
-        raise
+    """
+    Load ETF and macro data from Hugging Face dataset.
+    Returns:
+        df_etf: DataFrame with ETF returns and date column
+        df_macro: DataFrame with macro features and date column
+    """
+    # Download ETF data
+    etf_path = hf_hub_download(
+        repo_id="P2SAMAPA/p2-etf-deepm-data",
+        repo_type="dataset",
+        filename="data/etf_returns.parquet"
+    )
+    df_etf = pd.read_parquet(etf_path)
+    df_etf = _ensure_date_column(df_etf, "etf")
 
-    df_ret = pd.read_parquet(returns_path)
+    # Download macro data
+    macro_path = hf_hub_download(
+        repo_id="P2SAMAPA/p2-etf-deepm-data",
+        repo_type="dataset",
+        filename="data/macro_derived.parquet"
+    )
     df_macro = pd.read_parquet(macro_path)
-
-    # ── DATE ALIGNMENT ───────────────────────────
-    df_ret = _ensure_date_column(df_ret, "returns")
     df_macro = _ensure_date_column(df_macro, "macro")
 
-    df_ret["date"] = df_ret["date"].dt.normalize()
-    df_macro["date"] = df_macro["date"].dt.normalize()
+    # Optional: Drop rows with NaN dates (if any)
+    df_etf = df_etf.dropna(subset=["date"])
+    df_macro = df_macro.dropna(subset=["date"])
 
-    # ── MERGE & RECOVERY ─────────────────────────
-    # Use outer join first to handle frequency mismatches, then forward fill macro
-    df = pd.merge(df_ret, df_macro, on="date", how="left")
-    
-    # Sort by date before filling to ensure temporal integrity
-    df = df.sort_values("date").reset_index(drop=True)
-    
-    # Forward fill macro variables (last known value) but don't fill ETF returns
-    df[MACRO_VARS] = df[MACRO_VARS].ffill()
-    
-    # Final drop for rows that are still NaN (e.g., start of dataset)
-    df = df.dropna(subset=ALL_ETFS + MACRO_VARS)
+    # Ensure dates are timezone-naive for merging
+    df_etf["date"] = pd.to_datetime(df_etf["date"]).dt.tz_localize(None)
+    df_macro["date"] = pd.to_datetime(df_macro["date"]).dt.tz_localize(None)
 
-    # ── FINANCIAL HYGIENE: WINSORIZATION ─────────
-    # Clip extreme outliers (3 standard deviations) to prevent diffusion 'explosions'
-    for col in ALL_ETFS + MACRO_VARS:
-        upper = df[col].quantile(0.995)
-        lower = df[col].quantile(0.005)
-        df[col] = df[col].clip(lower, upper)
-
-    # ── FEATURE SCALING ──────────────────────────
-    # Standardize features: (x - mean) / std
-    # For a live model, you'd ideally use a rolling mean, 
-    # but for this batch loader, we standardize globally.
-    for col in ALL_ETFS + MACRO_VARS:
-        mu, sigma = df[col].mean(), df[col].std()
-        if sigma != 0:
-            df[col] = (df[col] - mu) / sigma
-
-    # ── GUARD ────────────────────────────────────
-    if len(df) < MIN_ROWS:
-        raise ValueError(f"Dataset too small after cleaning: {len(df)} rows.")
-
-    needed_cols = ["date"] + ALL_ETFS + MACRO_VARS
-    return df[needed_cols].reset_index(drop=True)
+    return df_etf, df_macro

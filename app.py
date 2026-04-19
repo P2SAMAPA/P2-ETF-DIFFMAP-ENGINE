@@ -144,7 +144,7 @@ def fetch_latest_results():
 
 @st.cache_data(ttl=300)
 def fetch_historical_archive():
-    """Builds a summary table of the last 30 signal files."""
+    """Builds a summary table of the last 30 signal files using 70/30 weighting."""
     api = HfApi()
     history_data = []
     try:
@@ -157,14 +157,18 @@ def fetch_historical_archive():
             with open(path, 'r') as f:
                 d = json.load(f)
             
-            # Weighted Selection for History View
+            # Weighted Selection for History View (70% consensus, 30% conviction)
             def get_hist_pick(etf_pool, agg_map, samp_map):
                 top_name = ""
                 top_val = -1.0
                 for t in etf_pool:
                     k = next((x for x in agg_map if clean_ticker_name(x) == t), t)
-                    # 50/50 Score
-                    w_score = (0.5 * (agg_map.get(k, 0)/19)) + (0.5 * float((np.array(samp_map.get(k,[0]))>0).mean()))
+                    wins = agg_map.get(k, 0)
+                    consensus_ratio = wins / 19.0
+                    s_arr = np.array(samp_map.get(k, [0]))
+                    conviction_ratio = float((s_arr > 0).mean()) if len(s_arr) > 0 else 0.0
+                    # 70/30 weighting
+                    w_score = (0.7 * consensus_ratio) + (0.3 * conviction_ratio)
                     if w_score > top_val:
                         top_val = w_score
                         top_name = t
@@ -196,10 +200,10 @@ consensus_counts = data_blob.get("agreement", {})
 diffusion_samples = data_blob.get("samples", {})
 execution_mode = data_blob.get("mode", "N/A")
 
-# ── THE HERO SELECTION (50/50 WEIGHTING) ────────────────────
+# ── THE HERO SELECTION (70% CONSENSUS + 30% CONVICTION) ─────
 def calculate_weighted_hero(ticker_list, counts, samples):
     """
-    Implements 50% Consensus Agreement + 50% Sample Conviction.
+    Implements 70% Consensus Agreement + 30% Sample Conviction.
     Selection is made across 19 trained windows.
     """
     best_id = ""
@@ -215,10 +219,10 @@ def calculate_weighted_hero(ticker_list, counts, samples):
         
         # 2. Conviction Weight (Percentage of 1000 samples > 0)
         s_data = np.array(samples.get(matched_key, [0]))
-        conviction_ratio = float((s_data > 0).mean())
+        conviction_ratio = float((s_data > 0).mean()) if len(s_data) > 0 else 0.0
         
-        # Combine
-        final_weighted_score = (0.5 * consensus_ratio) + (0.5 * conviction_ratio)
+        # Combine with 70/30 weighting
+        final_weighted_score = (0.7 * consensus_ratio) + (0.3 * conviction_ratio)
         
         if final_weighted_score > max_score:
             max_score = final_weighted_score
@@ -322,15 +326,16 @@ for k_raw, wins in consensus_counts.items():
     avg_r = float(np.mean(s_raw))
     c_pct = float((np.array(s_raw) > 0).mean())
     
-    # Calculate weighted rank score for sorting
-    rank_score = (0.5 * (wins/19)) + (0.5 * c_pct)
+    # Calculate weighted rank score for sorting (70% consensus, 30% conviction)
+    consensus_ratio = wins / 19.0
+    weighted_score = (0.7 * consensus_ratio) + (0.3 * c_pct)
     
     matrix_list.append({
         "Ticker": clean_t,
         "Category": category,
         "Pos. Windows": wins,
         "Conviction (%)": round(c_pct * 100, 1),
-        "Weighted Score": round(rank_score, 4),
+        "Weighted Score": round(weighted_score, 4),
         "Avg Ret (%)": round(avg_r * 100, 3)
     })
 
@@ -447,4 +452,4 @@ if st.button("Purge Cache & Sync"):
     st.rerun()
 
 st.markdown("---")
-st.caption("Internal Protocol: Trained for 2008-2026. 19 Windows Consensus. All Logic Verified.")
+st.caption("Internal Protocol: Trained for 2008-2026. 19 Windows Consensus. Weighting: 70% Consensus, 30% Conviction.")

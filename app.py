@@ -26,7 +26,7 @@ FI_ETFS = [
 # Equity Sector Universe
 EQ_ETFS = [
     "QQQ", "XLK", "XLF", "XLE", 
-    "XLV", "XLI", "XLY", "XLP", "IWM", IWF", "XSD", "XBI", 
+    "XLV", "XLI", "XLY", "XLP", "IWM", "IWF", "XSD", "XBI", 
     "XLU", "GDX", "XME"
 ]
 
